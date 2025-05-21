@@ -1,0 +1,66 @@
+name: LexiLift actions
+run-name: ${{ github.actor }} 🚀
+on:
+  push:
+    branches:
+      - main
+env:
+  APP_NAME: frontend-app
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [ 22.X ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm install
+      - name: Fix by eslint
+        run: npm run fix
+      - name: Lint
+        run: npm run lint
+      # Сборка Docker Image
+      - name: Build Docker Image
+        run: docker build -t $APP_NAME:latest .
+      # Архивация Docker Image
+      - name: Save Docker Image to File
+        run: docker save $APP_NAME:latest | gzip > $APP_NAME.tar.gz
+      # Настроим SSH-ключ
+      - name: Setup SSH key
+        run: |
+         mkdir -p "$HOME/.ssh"
+         echo "${{ secrets.SSH_PRIVATE_KEY }}" > "$HOME/.ssh/authorized_keys"
+         chmod 600 "$HOME/.ssh/authorized_keys"
+         # Отключаем проверку host key для SSH
+         echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > "$HOME/.ssh/config"
+      # Загрузка файлов на сервер через rsync
+      - name: Deploy to server via rsync
+        run: |
+          rsync -avz --delete -e "ssh -i $HOME/.ssh/authorized_keys" $APP_NAME.tar.gz docker-compose.yml \
+          ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/${{ secrets.SERVER_USER }}/$APP_NAME/
+      - name: Start docker image
+        uses: appleboy/ssh-action@v0.1.8
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          script: |
+            APP_NAME=frontend-app
+            
+            cd $APP_NAME
+            
+            ## Распаковываем образ
+            gzip -d -f $APP_NAME.tar.gz
+            docker load < $APP_NAME.tar
+
+            # Останавливаем старый контейнер и запускаем новый
+            docker-compose down
+            docker-compose up -d
